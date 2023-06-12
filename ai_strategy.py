@@ -78,10 +78,11 @@ class ai_TickStrategy(CtaTemplate):
     # feat_dict_ = {i: np.array([]) for i in cols_list}
     # df_2d = np.atleast_2d(np.zeros(123))
 
+    #模型参数
     threshold = 70_000
     side_long = 0.9
     side_short = 0.1
-    out = 0.8
+    out = 0.8 #第二个模型阈值
 
     
     # print(len(y_pred_side_list))
@@ -193,7 +194,7 @@ class ai_TickStrategy(CtaTemplate):
         # print(len(self.cta_engine.active_limit_orders))
         
         closetime = tick.closetime //100*100+99
-        # print(closetime)
+        # 提取depth数据
         if tick.name == 'depth':
             depth_dict = {'closetime': tick.closetime //100*100+99,
                            'ask_price1': tick.ask_price_1,'ask_size1': tick.ask_volume_1,'bid_price1': tick.bid_price_1,'bid_size1': tick.bid_volume_1,
@@ -208,29 +209,27 @@ class ai_TickStrategy(CtaTemplate):
                            'ask_price10': tick.ask_price_10,'ask_size10': tick.ask_volume_10,'bid_price10': tick.bid_price_10,'bid_size10': tick.bid_volume_10,
                             }
             self.depth.append(depth_dict)
+            
+        # 提取trade数据
         if tick.name == 'trade':
             self.cum_size += abs(tick.last_volume)
             self.turnover += abs(tick.last_volume) * tick.last_price
-            # print(tick.datetime,'size',tick.last_volume,'cum_size',self.cum_size)
             trade_dict = {'closetime': tick.closetime //100*100+99, 'price': tick.last_price,
                           'size': tick.last_volume, 'cum_size': self.cum_size, 'turnover': self.turnover}
             self.trade.append(trade_dict)
+            
         if tick.closetime:
-            # self.depth = self.depth[-10000:]
-            # self.trade = self.trade[-10000:]
             time_10 = int(tick.closetime/ 1000)
-            interval_time = 60000*40
+            interval_time = 60000*40 #提前储存40分钟数据用于计算因子
             if self.depth[-1]['closetime'] - self.depth[0]['closetime'] > interval_time and time_10 - self.last_time > 0.999:
                 self.last_time = time_10
                 len_depth = int(len(self.depth) * 0.99)
                 diff_time = self.depth[-1]['closetime'] - self.depth[-len_depth]['closetime']
                 if diff_time > interval_time:
                     self.depth = self.depth[-len_depth:]
-                # self.depth = self.depth[-500:]
                 len_trade = int(len(self.trade) * 0.99)
                 if self.trade[-1]['closetime'] - self.trade[-len_trade]['closetime'] > interval_time:
                     self.trade = self.trade[-len_trade:]
-                    # self.trade = self.trade[-500:]
     
                 df_depth = pd.DataFrame(self.depth)
                 df_trade = pd.DataFrame(self.trade)
@@ -257,6 +256,8 @@ class ai_TickStrategy(CtaTemplate):
                 # df_trade['datetime'] = pd.to_datetime(df_trade['closetime'] + 28800000, unit='ms')
                 # df_trade['cum_size'] = np.cumsum(abs(df_trade['size'].iloc[-1].fillna(0)))
                 # df_trade['turnover'] = np.cumsum(df_trade['price'].fillna(0) * abs(df_trade['size'].fillna(0)))
+                
+                # 当时间为00:00:00时，总成交额和总成交量归0重新计算
                 if time.localtime(df_trade['closetime'].iloc[-1]/1000).tm_mday != time.localtime(df_trade['closetime'].iloc[-2]/1000).tm_mday:
                     df_trade['cum_size'].iloc[-1] = 0
                     df_trade['turnover'].iloc[-1] = 0
@@ -267,9 +268,10 @@ class ai_TickStrategy(CtaTemplate):
                 # trade_ = trade.reset_index(drop=True)
                 # write_file_by_line('trade_adausdt_data.csv', ['closetime', 'price', 'size', 'cum_size', 'turnover'], 
                 #            row_list=[trade_.iloc[-1][0],trade_.iloc[-1][1],trade_.iloc[-1][2],trade_.iloc[-1][3],trade_.iloc[-1][4]])
+                
+                # 100ms数据trade和depth合并
                 data_merge = pd.merge(df_depth, df_trade, on='closetime', how='outer')
                 data_merge = data_merge.sort_values(by='closetime', ascending=True)
-                data_merge = data_merge.drop_duplicates(subset=['closetime'], keep='last')
                 data_merge['datetime'] = pd.to_datetime(data_merge['closetime'] + 28800000, unit='ms')
                 data_merge['sec'] = data_merge['datetime'].dt.second
                 closetime_sec = time.localtime(closetime / 1000).tm_sec
@@ -278,6 +280,7 @@ class ai_TickStrategy(CtaTemplate):
                     if data_merge['sec'].iloc[-1] != data_merge['sec'].iloc[-2]:
                         self.old_sec = closetime_sec
                         tick1 = data_merge.iloc[:-1,:]
+                # 取这一秒内最后一条切片为这个1s的点
                 tick1s = tick1.set_index('datetime').groupby(pd.Grouper(freq='1000ms')).apply('last')
                 # write_file_by_line('adausdt_all_data.csv', ['closetime', 'ask_price1', 'ask_size1', 'bid_price1', 'bid_size1',
                 #           'ask_price2', 'ask_size2', 'bid_price2', 'bid_size2', 
@@ -302,6 +305,7 @@ class ai_TickStrategy(CtaTemplate):
                 # msg_ = f'tick1s:{tick1s}--time:{tick.datetime}---symbol:{self.cta_engine.symbol}'
                 # self.log.info(msg_)
                 # print('--------------------',tick1)
+                tick1s = tick1s.drop_duplicates(subset=['closetime'], keep='last')
                 tick1s = tick1s.dropna(subset=['ask_price1'])
                 trade = tick1s.loc[:,['closetime', 'price', 'size', 'cum_size', 'turnover']]
                 depth = tick1s.loc[:, ['closetime', 
@@ -310,8 +314,10 @@ class ai_TickStrategy(CtaTemplate):
                                       'ask_price5','ask_size5', 'bid_price5', 'bid_size5','ask_price6', 'ask_size6', 'bid_price6', 'bid_size6',
                                       'ask_price7', 'ask_size7', 'bid_price7','bid_size7','ask_price8', 'ask_size8', 'bid_price8', 'bid_size8', 
                                       'ask_price9', 'ask_size9', 'bid_price9', 'bid_size9','ask_price10', 'ask_size10', 'bid_price10', 'bid_size10']]
+                # 计算因子
                 factor = add_factor_process(depth=depth, trade=trade)
                 # factor['datetime'] = pd.to_datetime(factor['closetime'] + 28800000, unit='ms')
+                # 计算120s vwap price
                 factor['vwap'] = (factor['price'].fillna(0) * abs(factor['size'].fillna(0))).rolling(120).sum() / abs(factor['size'].fillna(0)).rolling(120).sum()
                 factor['turnover'] = factor['turnover'].fillna(method='ffill')
                 # if time.time() - self.strategy_time > 30:
@@ -350,12 +356,12 @@ class ai_TickStrategy(CtaTemplate):
 
                         # 策略逻辑
                         # price = factor[-1][-1]
-                        price = factor['vwap'].iloc[-1]
-                        position_value = self.pos * price
-                        place_value = self.cta_engine.capital * self.pos_rate / self.split_count
-                        buy_size = round(place_value / tick.ask_price_1, 8)
-                        sell_size = round(place_value / tick.bid_price_1, 8)
-                        max_limited_order_value = self.cta_engine.capital * self.pos_rate
+                        price = factor['vwap'].iloc[-1]  #挂单价格
+                        position_value = self.pos * price  #持仓金额
+                        place_value = self.cta_engine.capital * self.pos_rate / self.split_count #挂单金额
+                        buy_size = round(place_value / tick.ask_price_1, 8) #买单量
+                        sell_size = round(place_value / tick.bid_price_1, 8) #卖单量
+                        max_limited_order_value = self.cta_engine.capital * self.pos_rate  #最大挂单金额
 
                         # 计算挂单金额
                         limit_orders_values = 0
@@ -402,7 +408,7 @@ class ai_TickStrategy(CtaTemplate):
                                 if self.cta_engine.active_limit_orders[last_order].volume>0:
                                     self.cancel_all(closetime=tick.closetime / 1000)
                             # print('--------------开空仓----------------', '品种:',self.model_symbol)
-                            if max_limited_order_value <= final_values*1.00001:
+                            if max_limited_order_value <= final_values*1.0001:
                                 self.cancel_all(closetime=tick.closetime / 1000)
                             self.sell(price=price * (1 - self.place_rate), volume=sell_size,  # stop=True,
                                       net=True, closetime=tick.closetime / 1000)
@@ -422,7 +428,7 @@ class ai_TickStrategy(CtaTemplate):
                                 if self.cta_engine.active_limit_orders[last_order].volume>0:
                                     self.cancel_all(closetime=tick.closetime / 1000)
                             # print('--------------开多仓----------------', '品种:',self.model_symbol)
-                            if max_limited_order_value <= final_values*1.00001:
+                            if max_limited_order_value <= final_values*1.0001:
                                 self.cancel_all(closetime=tick.closetime / 1000)
                             self.buy(price=price * (1 + self.place_rate), volume=buy_size,  # stop=True,
                                      net=True, closetime=tick.closetime / 1000)
